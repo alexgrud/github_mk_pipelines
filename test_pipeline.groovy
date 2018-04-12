@@ -13,7 +13,7 @@ node{
 	saltMasterHost="172.17.49.168"
 	SALT_MASTER_URL = "http://${saltMasterHost}:6969"
 	println(SALT_MASTER_URL)
-	SALT_MASTER_CREDENTIALS=salt-qa-credentials
+	SALT_MASTER_CREDENTIALS="salt-qa-credentials"
 	println(SALT_MASTER_CREDENTIALS)
 	}
 	stage ("installing virtualenv Pepper") {
