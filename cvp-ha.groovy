@@ -28,7 +28,8 @@ validate = new com.mirantis.mcp.Validate()
 def saltMaster
 def artifacts_dir = 'validation_artifacts/'
 def remote_artifacts_dir = '/root/qa_results/'
-def current_target_node = ''
+def current_target_node = null
+def first_node = null
 def tempest_result = ''
 timeout(time: 12, unit: 'HOURS') {
     node() {
@@ -59,8 +60,12 @@ timeout(time: 12, unit: 'HOURS') {
                     }
                 }
                 current_target_node = validate.get_vip_node(saltMaster, TARGET_NODES)
+                if (current_target_node == null) {
+                    throw new Exception("Cannot current vip node in ${TARGET_NODES} nodes")
+                }
                 common.warningMsg("Shutdown current vip node ${current_target_node}")
                 validate.shutdown_vm_node(saltMaster, current_target_node, 'soft_shutdown')
+                sleep 15
             }
             stage('Check during shutdown') {
                 tempest_result = validate.runCVPtempest(saltMaster, TEMPEST_TARGET_NODE, TEMPEST_TEST_PATTERN, SKIP_LIST_PATH, remote_artifacts_dir, "docker_tempest_during_shutdown")
@@ -79,6 +84,9 @@ timeout(time: 12, unit: 'HOURS') {
                 if (status == null) {
                     throw new Exception("Node ${current_target_node} cannot start")
                 }
+                first_node = current_target_node
+                current_target_node = null
+                sleep 30
             }
             stage('Check after shutdown') {
                 tempest_result = validate.runCVPtempest(saltMaster, TEMPEST_TARGET_NODE, TEMPEST_TEST_PATTERN, SKIP_LIST_PATH, remote_artifacts_dir, "docker_tempest_after_shutdown")
@@ -96,10 +104,13 @@ timeout(time: 12, unit: 'HOURS') {
                         input message: "Are you sure you want to hard shutdown current vip node?"
                     }
                 }
-                salt.cmdRun(saltMaster, current_target_node, "service keepalived stop")
+                salt.cmdRun(saltMaster, first_node, "service keepalived stop")
                 current_target_node = validate.get_vip_node(saltMaster, TARGET_NODES)
                 common.warningMsg("Shutdown current vip node ${current_target_node}")
                 validate.shutdown_vm_node(saltMaster, current_target_node, 'hard_shutdown')
+                //TODO:if previous command fails, keeaplived will not be started on first_node
+                sleep 10
+                salt.cmdRun(saltMaster, first_node, "service keepalived start")
             }
             stage('Check during hard shutdown') {
                 tempest_result = validate.runCVPtempest(saltMaster, TEMPEST_TARGET_NODE, TEMPEST_TEST_PATTERN, SKIP_LIST_PATH, remote_artifacts_dir, "docker_tempest_during_hard_shutdown")
@@ -116,9 +127,10 @@ timeout(time: 12, unit: 'HOURS') {
                 common.infoMsg("Checking that node is UP")
                 status = salt.minionsReachable(saltMaster, 'I@salt:master', current_target_node, null, 10, num_retries)
                 if (status == null) {
-                    throw new Exception("Command execution failed")
+                    throw new Exception("Node ${current_target_node} cannot start")
                 }
-                salt.cmdRun(saltMaster, TARGET_NODES, "service keepalived start")
+                current_target_node = null
+                sleep 30
             }
             stage('Check after hard shutdown') {
                 tempest_result = validate.runCVPtempest(saltMaster, TEMPEST_TARGET_NODE, TEMPEST_TEST_PATTERN, SKIP_LIST_PATH, remote_artifacts_dir, "docker_tempest_after_hard_shutdown")
@@ -127,7 +139,7 @@ timeout(time: 12, unit: 'HOURS') {
                     currentBuild.result = "FAILURE"
                     throw new Exception("Tempest tests failed")
                 }
-                sleep 15
+                sleep 5
             }
 
             stage('Reboot') {
@@ -148,6 +160,7 @@ timeout(time: 12, unit: 'HOURS') {
                     currentBuild.result = "FAILURE"
                     throw new Exception("Tempest tests failed")
                 }
+                sleep 30
             }
             stage('Check after reboot') {
                 common.warningMsg("Checking that node is UP")
@@ -155,6 +168,7 @@ timeout(time: 12, unit: 'HOURS') {
                 if (status == null) {
                     throw new Exception("Node ${current_target_node} cannot start")
                 }
+                current_target_node = null
                 tempest_result = validate.runCVPtempest(saltMaster, TEMPEST_TARGET_NODE, TEMPEST_TEST_PATTERN, SKIP_LIST_PATH, remote_artifacts_dir, "docker_tempest_after")
                 validate.openstack_cleanup(saltMaster, TEMPEST_TARGET_NODE)
                 if (tempest_result != "finished") {
@@ -175,6 +189,11 @@ timeout(time: 12, unit: 'HOURS') {
             if (DEBUG_MODE == 'false') {
                 salt.cmdRun(saltMaster, TEMPEST_TARGET_NODE, "rm -rf ${remote_artifacts_dir}")
                 validate.runCleanup(saltMaster, TEMPEST_TARGET_NODE)
+                if (current_target_node != null) {
+                    common.warningMsg("Powering on node ${current_target_node}")
+                    kvm = validate.locate_node_on_kvm(saltMaster, current_target_node)
+                    salt.cmdRun(saltMaster, kvm, "virsh start ${current_target_node}")
+                }
             }
         }
     }

@@ -7,33 +7,6 @@
  *
 **/
 
-// Deprecation to avoid unexpected behaviour because it should be passed via initial context.
-// Need to delete this "if" statement at 1 April 2018.
-if(env.COOKIECUTTER_TEMPLATE_CREDENTIALS ||
-   env.COOKIECUTTER_TEMPLATE_URL ||
-   env.COOKIECUTTER_TEMPLATE_BRANCH ||
-   env.COOKIECUTTER_TEMPLATE_PATH ||
-   env.SHARED_RECLASS_URL){
-    println '''
-    DEPRECATION: Please note that the following variables are deprocated:
-    - COOKIECUTTER_TEMPLATE_CREDENTIALS
-    - COOKIECUTTER_TEMPLATE_URL
-    - COOKIECUTTER_TEMPLATE_BRANCH
-    - COOKIECUTTER_TEMPLATE_PATH
-    - SHARED_RECLASS_URL
-    You need to pass the values using the following variables from initial cookiecutter context:
-    - cookiecutter_template_url
-    - cookiecutter_template_branch
-    - shared_reclass_url
-    The following variables are not needed anymore:
-    - COOKIECUTTER_TEMPLATE_CREDENTIALS - cookiecutter-templates repos are accessible for anounimous
-                                        (https://gerrit.mcp.mirantis.net)
-    - COOKIECUTTER_TEMPLATE_PATH - hardcoded to "${env.WORKSPACE}/template"
-    '''
-    currentBuild.result = "FAILURE"
-    return
-}
-
 common = new com.mirantis.mk.Common()
 git = new com.mirantis.mk.Git()
 python = new com.mirantis.mk.Python()
@@ -54,6 +27,8 @@ timeout(time: 12, unit: 'HOURS') {
             def clusterDomain = templateContext.default_context.cluster_domain
             def clusterName = templateContext.default_context.cluster_name
             def saltMaster = templateContext.default_context.salt_master_hostname
+            def localRepositories = templateContext.default_context.local_repositories.toBoolean()
+            def offlineDeployment = templateContext.default_context.offline_deployment.toBoolean()
             def cutterEnv = "${env.WORKSPACE}/cutter"
             def jinjaEnv = "${env.WORKSPACE}/jinja"
             def outputDestination = "${modelEnv}/classes/cluster/${clusterName}"
@@ -98,6 +73,7 @@ timeout(time: 12, unit: 'HOURS') {
                     sh "git init"
                     ssh.agentSh("git submodule add ${sharedReclassUrl} 'classes/system'")
                 }
+
                 def sharedReclassBranch = templateContext.default_context.shared_reclass_branch
                 // Use refspec if exists first of all
                 if (sharedReclassBranch.toString().startsWith('refs/')) {
@@ -161,6 +137,16 @@ timeout(time: 12, unit: 'HOURS') {
                 }
             }
 
+            if(localRepositories && !offlineDeployment){
+                def aptlyModelUrl = templateContext.default_context.local_model_url
+                dir(path: modelEnv) {
+                    ssh.agentSh "git submodule add \"${aptlyModelUrl}\" \"classes/cluster/${clusterName}/cicd/aptly\""
+                        if(!(mcpVersion in ["nightly", "testing", "stable"])){
+                        ssh.agentSh "cd \"classes/cluster/${clusterName}/cicd/aptly\";git fetch --tags;git checkout ${mcpVersion}"
+                    }
+                }
+            }
+
             stage('Generate new SaltMaster node') {
                 def nodeFile = "${modelEnv}/nodes/${saltMaster}.${clusterDomain}.yml"
                 def nodeString = """classes:
@@ -192,8 +178,16 @@ parameters:
 
                 // download create-config-drive
                 // FIXME: that should be refactored, to use git clone - to be able download it from custom repo.
-                def config_drive_script_url = "https://raw.githubusercontent.com/Mirantis/mcp-common-scripts/master/config-drive/create_config_drive.sh"
-                def user_data_script_url = "https://raw.githubusercontent.com/Mirantis/mcp-common-scripts/master/config-drive/master_config.sh"
+                def mcpCommonScriptsBranch = templateContext.default_context.mcp_common_scripts_branch
+                if (mcpCommonScriptsBranch == '') {
+                    mcpCommonScriptsBranch = mcpVersion
+                    // Don't have nightly for mcp-common-scripts repo, therefore use master
+                    if(mcpVersion == "nightly"){
+                        mcpCommonScriptsBranch = 'master'
+                    }
+                }
+                def config_drive_script_url = "https://raw.githubusercontent.com/Mirantis/mcp-common-scripts/${mcpCommonScriptsBranch}/config-drive/create_config_drive.sh"
+                def user_data_script_url = "https://raw.githubusercontent.com/Mirantis/mcp-common-scripts/${mcpCommonScriptsBranch}/config-drive/master_config.sh"
 
                 sh "wget -O create-config-drive ${config_drive_script_url} && chmod +x create-config-drive"
                 sh "wget -O user_data.sh ${user_data_script_url}"
@@ -209,9 +203,14 @@ parameters:
                 smc['DEPLOY_NETWORK_GW'] = templateContext['default_context']['deploy_network_gateway']
                 smc['DEPLOY_NETWORK_NETMASK'] = templateContext['default_context']['deploy_network_netmask']
                 smc['DNS_SERVERS'] = templateContext['default_context']['dns_server01']
+                smc['MCP_VERSION'] = "${mcpVersion}"
                 if (templateContext['default_context']['local_repositories'] == 'True'){
+                    def localRepoIP = templateContext['default_context']['local_repo_url']
+                    smc['MCP_SALT_REPO_KEY'] = "http://${localRepoIP}/public.gpg"
+                    smc['MCP_SALT_REPO_URL'] = "http://${localRepoIP}/ubuntu-xenial"
                     smc['PIPELINES_FROM_ISO'] = 'false'
-                    smc['PIPELINE_REPO_URL'] = 'http://' + templateContext['default_context']['aptly_server_deploy_address'] + ':8088'
+                    smc['PIPELINE_REPO_URL'] = "http://${localRepoIP}:8088"
+                    smc['LOCAL_REPOS'] = 'true'
                 }
                 if (templateContext['default_context']['upstream_proxy_enabled'] == 'True'){
                     if (templateContext['default_context']['upstream_proxy_auth_enabled'] == 'True'){

@@ -10,6 +10,7 @@
  *  TEST_CLUSTER_NAMES list of comma separated cluster names to test (optional, default all cluster levels)
  *  LEGACY_TEST_MODE legacy test mode flag
  *  RECLASS_IGNORE_CLASS_NOTFOUND ignore missing class flag for reclass config
+ *  RECLASS_VERSION Version of reclass to be used (branch, ...)
  *  APT_REPOSITORY extra apt repository url
  *  APT_REPOSITORY_GPG extra apt repository url GPG
  */
@@ -105,6 +106,7 @@ def triggerTestNodeJob(defaultGitUrl, defaultGitRef, clusterName, testTarget, fo
     [$class: 'StringParameterValue', name: 'FORMULAS_REVISION', value: FORMULAS_REVISION],
     [$class: 'StringParameterValue', name: 'CREDENTIALS_ID', value: CREDENTIALS_ID],
     [$class: 'StringParameterValue', name: 'SYSTEM_GIT_URL', value: SYSTEM_GIT_URL],
+    [$class: 'StringParameterValue', name: 'RECLASS_VERSION', value: RECLASS_VERSION],
     [$class: 'StringParameterValue', name: 'MAX_CPU_PER_JOB', value: MAX_CPU_PER_JOB],
     [$class: 'StringParameterValue', name: 'SYSTEM_GIT_REF', value: SYSTEM_GIT_REF],
     [$class: 'BooleanParameterValue', name: 'LEGACY_TEST_MODE', value: LEGACY_TEST_MODE.toBoolean()],

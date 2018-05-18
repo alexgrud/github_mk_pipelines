@@ -16,6 +16,12 @@ def common = new com.mirantis.mk.Common()
 def salt = new com.mirantis.mk.Salt()
 def python = new com.mirantis.mk.Python()
 
+def getNodeProvider(pepperEnv, name) {
+    def salt = new com.mirantis.mk.Salt()
+    def kvm = salt.getKvmMinionId(pepperEnv)
+    return salt.getReturnValues(salt.getPillar(pepperEnv, "${kvm}", "salt:control:cluster:internal:node:${name}:provider"))
+}
+
 def stopServices(pepperEnv, probe, target, type) {
     def openstack = new com.mirantis.mk.Openstack()
     def services = []
@@ -86,7 +92,7 @@ def vcpTestUpgrade(pepperEnv) {
 
     if (SKIP_VM_RELAUNCH.toBoolean() == false) {
 
-        def upgNodeProvider = salt.getNodeProvider(pepperEnv, test_upgrade_node)
+        def upgNodeProvider = getNodeProvider(pepperEnv, test_upgrade_node)
 
         salt.runSaltProcessStep(pepperEnv, "${upgNodeProvider}", 'virt.destroy', ["${test_upgrade_node}.${domain}"])
         salt.runSaltProcessStep(pepperEnv, "${upgNodeProvider}", 'virt.undefine', ["${test_upgrade_node}.${domain}"])
@@ -98,7 +104,7 @@ def vcpTestUpgrade(pepperEnv) {
         }
 
         // salt 'kvm02*' state.sls salt.control
-        salt.enforceState(pepperEnv, "${upgNodeProvider}", 'salt.control')
+        stateRun(pepperEnv, "${upgNodeProvider}", 'salt.control')
         // wait until upg node is registered in salt-key
         salt.minionPresent(pepperEnv, 'I@salt:master', test_upgrade_node)
         // salt '*' saltutil.refresh_pillar
@@ -107,10 +113,17 @@ def vcpTestUpgrade(pepperEnv) {
         salt.runSaltProcessStep(pepperEnv, "${test_upgrade_node}*", 'saltutil.sync_all', [])
     }
 
+    stateRun(pepperEnv, "${test_upgrade_node}*", ['linux.network.proxy'])
+    try {
+        salt.runSaltProcessStep(pepperEnv, "${test_upgrade_node}*", 'state.sls', ["salt.minion.base"], null, true, 60)
+    } catch (Exception e) {
+        common.warningMsg(e)
+    }
+
     stateRun(pepperEnv, "${test_upgrade_node}*", ['linux', 'openssh'])
 
     try {
-        salt.runSaltProcessStep(master, "${test_upgrade_node}*", 'state.sls', ["salt.minion"], null, true, 60)
+        salt.runSaltProcessStep(pepperEnv, "${test_upgrade_node}*", 'state.sls', ["salt.minion"], null, true, 60)
     } catch (Exception e) {
         common.warningMsg(e)
     }
@@ -122,16 +135,17 @@ def vcpTestUpgrade(pepperEnv) {
     } catch (Exception e) {
         common.warningMsg('salt-minion was restarted. We should continue to run')
     }
+    salt.runSaltProcessStep(master, '( I@galera:master or I@galera:slave ) and I@backupninja:client', 'saltutil.sync_grains')
+    salt.runSaltProcessStep(master, '( I@galera:master or I@galera:slave ) and I@backupninja:client', 'mine.flush')
+    salt.runSaltProcessStep(master, '( I@galera:master or I@galera:slave ) and I@backupninja:client', 'mine.update')
+    salt.enforceState(pepperEnv, '( I@galera:master or I@galera:slave ) and I@backupninja:client', 'backupninja')
     try {
         salt.enforceState(pepperEnv, 'I@backupninja:server', ['salt.minion'])
     } catch (Exception e) {
         common.warningMsg('salt-minion was restarted. We should continue to run')
     }
-    // salt '*' state.apply salt.minion.grains
-    //salt.enforceState(pepperEnv, '*', 'salt.minion.grains')
-    // salt -C 'I@backupninja:server' state.sls backupninja
+
     salt.enforceState(pepperEnv, 'I@backupninja:server', 'backupninja')
-    salt.enforceState(pepperEnv, '( I@galera:master or I@galera:slave ) and I@backupninja:client', 'backupninja')
     salt.runSaltProcessStep(pepperEnv, '( I@galera:master or I@galera:slave ) and I@backupninja:client', 'ssh.rm_known_host', ["root", "${backupninja_backup_host}"])
     try {
         salt.cmdRun(pepperEnv, '( I@galera:master or I@galera:slave ) and I@backupninja:client', "arp -d ${backupninja_backup_host}")
@@ -145,7 +159,7 @@ def vcpTestUpgrade(pepperEnv) {
     salt.enforceState(pepperEnv, 'I@xtrabackup:server', 'xtrabackup')
     salt.enforceState(pepperEnv, 'I@xtrabackup:client', 'openssh.client')
     salt.cmdRun(pepperEnv, 'I@xtrabackup:client', "su root -c 'salt-call state.sls xtrabackup'")
-    salt.cmdRun(pepperEnv, 'I@xtrabackup:client', "su root -c '/usr/local/bin/innobackupex-runner.sh'")
+    salt.cmdRun(pepperEnv, 'I@xtrabackup:client', "su root -c '/usr/local/bin/innobackupex-runner.sh -f -s'")
 
     def databases = salt.cmdRun(pepperEnv, 'I@mysql:client','salt-call mysql.db_list | grep upgrade | awk \'/-/ {print \$2}\'')
     if(databases && databases != ""){
@@ -223,10 +237,9 @@ def vcpRealUpgrade(pepperEnv) {
             stopServices(pepperEnv, node, tgt, general_target)
         }
 
-        def node_count = 1
         for (t in target_hosts) {
             def target = salt.stripDomainName(t)
-            def nodeProvider = salt.getNodeProvider(pepperEnv, "${general_target}0${node_count}")
+            def nodeProvider = salt.getNodeProvider(pepperEnv, t)
             if ((OPERATING_SYSTEM_RELEASE_UPGRADE.toBoolean() == true) && (SKIP_VM_RELAUNCH.toBoolean() == false)) {
                 salt.runSaltProcessStep(pepperEnv, "${nodeProvider}", 'virt.destroy', ["${target}.${domain}"])
                 sleep(2)
@@ -244,12 +257,11 @@ def vcpRealUpgrade(pepperEnv) {
             } else if (OPERATING_SYSTEM_RELEASE_UPGRADE.toBoolean() == false) {
                 virsh.liveSnapshotPresent(pepperEnv, nodeProvider, target, snapshotName)
             }
-            node_count++
         }
     }
 
     if ((OPERATING_SYSTEM_RELEASE_UPGRADE.toBoolean() == true) && (SKIP_VM_RELAUNCH.toBoolean() == false)) {
-        salt.cmdRun(pepperEnv, 'I@xtrabackup:client', "su root -c '/usr/local/bin/innobackupex-runner.sh'")
+        salt.cmdRun(pepperEnv, 'I@xtrabackup:client', "su root -c '/usr/local/bin/innobackupex-runner.sh -f -s'")
 
         salt.enforceState(pepperEnv, 'I@salt:control', 'salt.control')
 
@@ -262,6 +274,13 @@ def vcpRealUpgrade(pepperEnv) {
     salt.runSaltProcessStep(pepperEnv, upgrade_general_target, 'saltutil.refresh_pillar', [])
     // salt '*' saltutil.sync_all
     salt.runSaltProcessStep(pepperEnv, upgrade_general_target, 'saltutil.sync_all', [])
+
+    stateRun(pepperEnv, upgrade_general_target, ['linux.network.proxy'])
+    try {
+        salt.runSaltProcessStep(pepperEnv, upgrade_general_target, 'state.sls', ["salt.minion.base"], null, true, 60)
+    } catch (Exception e) {
+        common.warningMsg(e)
+    }
 
     if (OPERATING_SYSTEM_RELEASE_UPGRADE.toBoolean() == false) {
 
@@ -302,7 +321,7 @@ def vcpRealUpgrade(pepperEnv) {
             common.warningMsg(e)
         }
         try {
-            salt.runSaltProcessStep(master, upgrade_general_target, 'state.sls', ["salt.minion"], null, true, 60)
+            salt.runSaltProcessStep(pepperEnv, upgrade_general_target, 'state.sls', ["salt.minion"], null, true, 60)
         } catch (Exception e) {
             common.warningMsg(e)
         }
@@ -468,10 +487,9 @@ def vcpRollback(pepperEnv) {
             general_target = 'ctl'
         }
 
-        def node_count = 1
         for (t in target_hosts) {
             def target = salt.stripDomainName(t)
-            def nodeProvider = salt.getNodeProvider(pepperEnv, "${general_target}0${node_count}")
+            def nodeProvider = salt.getNodeProvider(pepperEnv, t)
             salt.runSaltProcessStep(pepperEnv, "${nodeProvider}", 'virt.destroy', ["${target}.${domain}"])
             sleep(2)
             if (OPERATING_SYSTEM_RELEASE_UPGRADE.toBoolean() == true) {
@@ -487,7 +505,6 @@ def vcpRollback(pepperEnv) {
                 salt.runSaltProcessStep(pepperEnv, "${nodeProvider}", 'virt.start', ["${target}.${domain}"])
                 virsh.liveSnapshotAbsent(pepperEnv, nodeProvider, target, snapshotName)
             }
-            node_count++
         }
     }
 

@@ -201,6 +201,13 @@ timeout(time: 12, unit: 'HOURS') {
                             envParams.put('cluster_name', STACK_CLUSTER_NAME)
                         }
 
+                        if (common.validInputParam('STACK_COMPUTE_COUNT')) {
+                            if (STACK_COMPUTE_COUNT.toInteger() > 0){
+                                common.infoMsg("Setting cluster_node_count to ${STACK_COMPUTE_COUNT}")
+                                envParams.put('cluster_node_count', STACK_COMPUTE_COUNT)
+                            }
+                        }
+
                         openstack.createHeatStack(openstackCloud, STACK_NAME, STACK_TEMPLATE, envParams, HEAT_STACK_ENVIRONMENT, venv)
                     }
 
@@ -579,7 +586,24 @@ timeout(time: 12, unit: 'HOURS') {
 
             stage('Finalize') {
                 if (common.checkContains('STACK_INSTALL', 'finalize')) {
-                    salt.runSaltProcessStep(venvPepper, '*', 'state.apply', [], null, true)
+                    def gluster_compound = 'I@glusterfs:server'
+                    def salt_ca_compound = 'I@salt:minion:ca:salt_master_ca'
+                    // Enforce highstate asynchronous only on the nodes which are not glusterfs servers
+                    salt.enforceHighstate(venvPepper, '* and not ' + gluster_compound + ' and not ' + salt_ca_compound)
+                    // Iterate over nonempty set of gluster servers and apply highstates one by one
+                    // TODO: switch to batch once salt 2017.7+ would be used
+                    def saltcaMinions = salt.getMinionsSorted(venvPepper, salt_ca_compound)
+                    if ( !saltcaMinions.isEmpty() ) {
+                        for ( target in saltcaMinions ) {
+                            salt.enforceHighstate(venvPepper, target)
+                        }
+                    }
+                    def glusterMinions = salt.getMinionsSorted(venvPepper, gluster_compound)
+                    if ( !glusterMinions.isEmpty() ) {
+                        for ( target in glusterMinions ) {
+                            salt.enforceHighstate(venvPepper, target)
+                        }
+                    }
                 }
 
                 outputsPretty = common.prettify(outputs)

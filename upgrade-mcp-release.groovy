@@ -10,10 +10,11 @@
  */
 
 // Load shared libs
-def salt = new com.mirantis.mk.Salt()
-def common = new com.mirantis.mk.Common()
-def python = new com.mirantis.mk.Python()
-def venvPepper = "venvPepper"
+salt = new com.mirantis.mk.Salt()
+common = new com.mirantis.mk.Common()
+python = new com.mirantis.mk.Python()
+venvPepper = "venvPepper"
+
 timeout(time: 12, unit: 'HOURS') {
     node("python") {
         try {
@@ -29,20 +30,42 @@ timeout(time: 12, unit: 'HOURS') {
             if(UPDATE_LOCAL_REPOS.toBoolean()){
                 stage("Update local repos"){
                     common.infoMsg("Updating local repositories")
-                    salt.cmdRun(venvPepper, '*apt*', "aptly mirror list --raw | grep -E '*' | xargs -n 1 aptly mirror drop -force", true, null, true, ['runas=aptly'])
-                    salt.enforceState(venvPepper, '*apt*', 'aptly', true)
-                    salt.runSaltProcessStep(venvPepper, '*apt*', 'cmd.script', ['salt://aptly/files/aptly_mirror_update.sh', "args=-sv", 'runas=aptly'], null, true)
-                    salt.runSaltProcessStep(venvPepper, '*apt*', 'cmd.script', ['salt://aptly/files/aptly_publish_update.sh', "args=-afrv", 'runas=aptly'], null, true)
 
-                    salt.enforceState(venvPepper, '*apt*', 'docker.client.registry', true)
+                    def engine = salt.getPillar(venvPepper, 'I@aptly:server', "aptly:server:source:engine")
+                    runningOnDocker = engine.get("return")[0].containsValue("docker")
 
-                    salt.cmdRun(venvPepper, '*apt*', "export HOME='/root';export MCP_VERSION='${MCP_VERSION}';/srv/scripts/debmirror.sh")
+                    if (runningOnDocker) {
+                        common.infoMsg("Aptly is running as Docker container")
+                    }
+                    else {
+                        common.infoMsg("Aptly isn't running as Docker container. Going to use aptly user for executing aptly commands")
+                    }
 
-                    salt.enforceState(venvPepper, '*apt*', 'git server', true)
+                    if(runningOnDocker){
+                        salt.cmdRun(venvPepper, 'I@aptly:server', "aptly mirror list --raw | grep -E '*' | xargs -n 1 aptly mirror drop -force", true, null, true)
+                    }
+                    else{
+                       salt.cmdRun(venvPepper, 'I@aptly:server', "aptly mirror list --raw | grep -E '*' | xargs -n 1 aptly mirror drop -force", true, null, true, ['runas=aptly'])
+                    }
 
-                    salt.cmdRun(venvPepper, '*apt*', 'pip2pi /srv/pypi_mirror/packages/ -r /srv/pypi_mirror/requirements.txt')
+                    salt.enforceState(venvPepper, 'I@aptly:server', 'aptly', true)
 
-                    salt.cmdRun(venvPepper, '*apt*', '/srv/scripts/update-images.sh')
+                    if(runningOnDocker){
+                        salt.runSaltProcessStep(venvPepper, 'I@aptly:server', 'cmd.script', ['salt://aptly/files/aptly_mirror_update.sh', "args=-sv"], null, true)
+                        salt.runSaltProcessStep(venvPepper, 'I@aptly:server', 'cmd.script', ['salt://aptly/files/aptly_publish_update.sh', "args=-frv -u http://10.99.0.1:8080"], null, true)
+                    }
+                    else{
+                        salt.runSaltProcessStep(venvPepper, 'I@aptly:server', 'cmd.script', ['salt://aptly/files/aptly_mirror_update.sh', "args=-sv", 'runas=aptly'], null, true)
+                        salt.runSaltProcessStep(venvPepper, 'I@aptly:server', 'cmd.script', ['salt://aptly/files/aptly_publish_update.sh', "args=-afrv", 'runas=aptly'], null, true)
+                    }
+
+                    salt.enforceState(venvPepper, 'I@aptly:server', 'docker.client.registry', true)
+
+                    salt.enforceState(venvPepper, 'I@aptly:server', 'debmirror', true)
+
+                    salt.enforceState(venvPepper, 'I@aptly:server', 'git.server', true)
+
+                    salt.enforceState(venvPepper, 'I@aptly:server', 'linux.system.file', true)
                 }
             }
 
