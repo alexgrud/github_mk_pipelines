@@ -401,6 +401,19 @@ timeout(time: 12, unit: 'HOURS') {
             if (common.checkContains('STACK_INSTALL', 'openstack')) {
                 // install Infra and control, tests, ...
 
+                //check for orchestration configuration on salt master:
+                //if not empty - run orchestration states (salt-run state.orchestrate ${app}.orchestrate.deploy)
+                //in order of applications` priorities defined in configuration
+                def _orch = salt.getConfig(venvPepper, 'I@salt:master', 'orchestration.deploy.applications')
+                if ( !_orch['return'][0].values()[0].isEmpty() ) {
+                  Map<String,Integer> _orch_app = [:]
+                  for (key in _orch['return'][0].values()[0].keySet()) {
+                    _orch_app[key] = _orch['return'][0].values()[0][key].values()[0].toInteger()
+                  }
+                def _orch_app_sorted = common.SortMapByValueAsc(_orch_app)
+                def out = orchestrate.OrchestrateOpenstackApplications(venvPepper, 'I@salt:master', _orch_app_sorted.keySet())
+                }
+
                 stage('Install OpenStack infra') {
                     orchestrate.installOpenstackInfra(venvPepper)
                 }
