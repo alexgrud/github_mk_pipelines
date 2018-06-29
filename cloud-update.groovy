@@ -425,6 +425,22 @@ def contrailServices(pepperEnv, target, action='stop') {
     }
 }
 
+def periodicCheck(pepperEnv, target, maxRetries=50) {
+    def salt = new com.mirantis.mk.Salt()
+    def common = new com.mirantis.mk.Common()
+    def count = 0
+    while(count < maxRetries) {
+        try {
+            sleep(10)
+            salt.minionsReachable(pepperEnv, 'I@salt:master', target)
+            break
+        } catch (Exception e) {
+            common.warningMsg("${target} not ready yet. Waiting ...")
+        }
+        count++
+    }
+}
+
 def highstate(pepperEnv, target, type) {
     def salt = new com.mirantis.mk.Salt()
     def common = new com.mirantis.mk.Common()
@@ -457,9 +473,17 @@ def highstate(pepperEnv, target, type) {
     // optionally reboot
     if (reboots.contains(type)) {
         stage("Reboot ${target} nodes") {
-            salt.runSaltProcessStep(pepperEnv, target, 'system.reboot', null, null, true, 5)
-            sleep(10)
-            salt.minionsReachable(pepperEnv, 'I@salt:master', target)
+            if (type == 'cfg') {
+                try {
+                    salt.runSaltProcessStep(pepperEnv, target, 'system.reboot', null, null, true, 5)
+                } catch (Exception e) {
+                    periodicCheck(pepperEnv, target)
+                }
+            } else {
+                salt.runSaltProcessStep(pepperEnv, target, 'system.reboot', null, null, true, 5)
+                sleep 10
+                salt.minionsReachable(pepperEnv, 'I@salt:master', target)
+            }
         }
     }
 }
@@ -683,13 +707,26 @@ def restoreContrailDb(pepperEnv) {
 def verifyAPIs(pepperEnv, target) {
     def salt = new com.mirantis.mk.Salt()
     def common = new com.mirantis.mk.Common()
-    def out = salt.cmdRun(pepperEnv, target, '. /root/keystonercv3; openstack service list; openstack image list; openstack flavor list; openstack compute service list; openstack server list; openstack network list; openstack volume list; openstack orchestration service list')
-    if (out.toString().toLowerCase().contains('error')) {
-        common.errorMsg(out)
-        if (INTERACTIVE.toBoolean()) {
-            input message: "APIs are not working as expected. Please fix it manually."
-        } else {
-            throw new Exception("APIs are not working as expected")
+    def cmds = ["openstack service list",
+                "openstack image list",
+                "openstack flavor list",
+                "openstack compute service list",
+                "openstack server list",
+                "openstack network list",
+                "openstack volume list",
+                "openstack orchestration service list"]
+    def sourcerc = ". /root/keystonercv3;"
+    def cmdOut = ">/dev/null 2>&1;echo \$?"
+    for (c in cmds) {
+        def command = sourcerc + c + cmdOut
+        def out = salt.cmdRun(pepperEnv, target, "${command}")
+        if (!out.toString().toLowerCase().contains('0')) {
+            common.errorMsg(out)
+            if (INTERACTIVE.toBoolean()) {
+                input message: "APIs are not working as expected. Please fix it manually."
+            } else {
+                throw new Exception("APIs are not working as expected")
+            }
         }
     }
 }
@@ -700,7 +737,7 @@ def verifyGalera(pepperEnv, target, count=0, maxRetries=200) {
     def out
     while(count < maxRetries) {
         try {
-            out = salt.getReturnValues(salt.cmdRun(pepperEnv, target, 'salt-call mysql.status | grep -A1 wsrep_cluster_size'))
+            out = salt.getReturnValues(salt.cmdRun(pepperEnv, target, 'salt-call -l quiet mysql.status | grep -A1 wsrep_cluster_size'))
         } catch (Exception er) {
             common.infoMsg(er)
         }
@@ -1497,7 +1534,7 @@ timeout(time: 12, unit: 'HOURS') {
 
             if (merges.contains("log")) {
                 if (salt.testTarget(pepperEnv, LOG_TARGET)) {
-                    mergeSnapshot(pepperEnv, LOG_TARGET. 'log')
+                    mergeSnapshot(pepperEnv, LOG_TARGET, 'log')
                 }
             }
 
