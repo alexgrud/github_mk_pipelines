@@ -327,9 +327,11 @@ timeout(time: 12, unit: 'HOURS') {
                     }
                     orchestrate.installFoundationInfra(venvPepper, staticMgmtNetwork, extra_tgt)
 
+                    orchestrate.OrchestrateApplications(venvPepper, "I@salt:master ${extra_tgt}", "orchestration.deploy.applications")
+
                     if (common.checkContains('STACK_INSTALL', 'kvm')) {
                         orchestrate.installInfraKvm(venvPepper, extra_tgt)
-                        orchestrate.installFoundationInfra(venvPepper, staticMgmtNetwork, extra_target)
+                        orchestrate.installFoundationInfra(venvPepper, staticMgmtNetwork, extra_tgt)
                     }
 
                     orchestrate.validateFoundationInfra(venvPepper, extra_tgt)
@@ -345,7 +347,7 @@ timeout(time: 12, unit: 'HOURS') {
                         def awsOutputs = aws.getOutputs(venv, aws_env_vars, STACK_NAME)
                         common.prettyPrint(awsOutputs)
                         if (awsOutputs.containsKey('ControlLoadBalancer')) {
-                            salt.runSaltProcessStep(venvPepper, "I@salt:master ${extra_tgt}", 'reclass.cluster_meta_set', ['kubernetes_control_address', awsOutputs['ControlLoadBalancer']], null, true, -1, null)
+                            salt.runSaltProcessStep(venvPepper, "I@salt:master ${extra_tgt}", 'reclass.cluster_meta_set', ['kubernetes_control_address', awsOutputs['ControlLoadBalancer']], null, true)
                             outputs.put('kubernetes_apiserver', 'https://' + awsOutputs['ControlLoadBalancer'])
                         }
                     }
